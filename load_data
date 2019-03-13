@@ -1,0 +1,255 @@
+-- A2 INSTANTIATING / LOADING
+-- Load JOURNAL data
+-- Creates:
+--      Nodes Paper/Author/Journal
+--      Relations WRITES/PUBLISHED
+LOAD CSV FROM 'file:///journals2.csv' AS line FIELDTERMINATOR ';'
+MERGE (p:Paper { title: line[3], doi: line[1], pages:line[2], web: line[4], year: line[5]})
+MERGE (a:Author { name: line[0]})
+MERGE (j:Journal { name: line[6]})
+MERGE (a)-[w:WRITES]->(p)
+MERGE (p)<-[b:PUBLISHED{ year: line[5]}]-(j)
+
+-- Load WORKSHOP/CONFERENCE data
+-- Creates:
+--      Nodes Paper/Author/Conference
+--      Relations WRITES/PUBLISHED
+LOAD CSV FROM 'file:///workshops2.csv' AS line FIELDTERMINATOR ';'
+MERGE (p:Paper { title: line[3], doi: line[1], pages:line[2], web: line[4], year: line[5]})
+MERGE (a:Author { name: line[0]})
+MERGE (j:Conference { name: line[6]})
+MERGE (a)-[w:WRITES]->(p)
+MERGE (p)<-[b:PUBLISHED {edition: line[5]}]-(j)
+
+-- Load KEYWORDS data
+LOAD CSV FROM 'file:///keyword.csv' AS line FIELDTERMINATOR ';'
+MERGE (k:Keyword {word: line[0]})
+
+MATCH (k:Keyword)
+WITH k
+WITH COLLECT(k) as keys
+MATCH (p:Paper)
+WHERE NOT (p)<-[:APPEAR]-()
+WITH p, keys[toInteger(round(rand()*12))] as k1, keys[toInteger(round(rand()*12))] as k2, keys[toInteger(round(rand()*12))] as k3
+MERGE (k1)-[:APPEAR]->(p)
+MERGE (k2)-[:APPEAR]->(p)
+MERGE (k3)-[:APPEAR]->(p)
+
+-- Creating REVIEWS relation
+MATCH (a:Author)
+WITH a
+WITH COLLECT(a) as authors
+MATCH (p:Paper)
+WHERE NOT (p)<-[:REVIEWS]-()
+WITH p, authors[toInteger(round(rand()*5044))] as a1, authors[toInteger(round(rand()*5044))] as a2, authors[toInteger(round(rand()*5044))] as a3
+WHERE NOT (a1)-[]-(p)
+AND NOT (a2)-[]-(p)
+AND NOT (a3)-[]-(p)
+MERGE (a1)-[:REVIEWS]->(p)
+MERGE (a2)-[:REVIEWS]->(p)
+MERGE (a3)-[:REVIEWS]->(p)
+
+-- Creatin CITEBY/CITETO relations
+MATCH (pa:Paper)
+WITH pa
+WITH COLLECT(pa) as papers
+MATCH (p:Paper)
+WHERE NOT ()-[:CITEBY]->(p)
+WITH p, papers[toInteger(round(rand()*882))] as p2, papers[toInteger(round(rand()*882))] as p3, papers[toInteger(round(rand()*882))] as p4
+WHERE p.title <> p2.title
+AND p.title <> p3.title 
+AND p.title <> p4.title
+AND p.year > p4.year
+AND p.year > p2.year
+AND p.year > p3.year
+MERGE (p2)-[:CITEBY]->(p)
+MERGE (p3)-[:CITEBY]->(p)
+MERGE (p4)-[:CITEBY]->(p)
+MERGE (p2)<-[:CITETO]-(p)
+MERGE (p3)<-[:CITETO]-(p)
+MERGE (p4)<-[:CITETO]-(p)
+
+-- Load affiliations of each Author
+LOAD CSV FROM 'file:///affiliation.csv' AS line FIELDTERMINATOR ';'
+MERGE (a:University {name: line[0]})
+
+LOAD CSV FROM 'file:///affiliation.csv' AS line FIELDTERMINATOR ';'
+MERGE (a:Company {name: line[1]})
+
+-- Assumption that an author can't be in an university and companies, they are exclusive
+MATCH (a:Company)
+WITH COLLECT(a) AS Affiliations 
+MATCH (au:Author)
+WHERE NOT (au)<-[:AFFILIATIONOF]-()
+WITH au, Affiliations[toInteger(round(rand()*9))] AS a1
+ORDER BY au.name
+LIMIT 2523
+MERGE (au)<-[:AFFILIATIONOF]-(a1)
+
+MATCH (a:University)
+WITH COLLECT(a) AS Affiliations 
+MATCH (au:Author)
+WHERE NOT (au)<-[:AFFILIATIONOF]-()
+WITH au, Affiliations[toInteger(round(rand()*9))] AS a1
+ORDER BY au.name
+LIMIT 2522
+MERGE (au)<-[:AFFILIATIONOF]-(a1)
+
+
+
+-- Citations (EXPLAIN WHY CITEBY/CITETO)
+MATCH (pa:Paper)
+WITH pa
+WITH COLLECT(pa) as papers
+MATCH (p:Paper)
+WHERE NOT ()-[:CITEBY]->(p)
+WITH p, papers[toInteger(round(rand()*882))] as p2, papers[toInteger(round(rand()*882))] as p3, papers[toInteger(round(rand()*882))] as p4
+WHERE p.title <> p2.title
+AND p.title <> p3.title 
+AND p.title <> p4.title
+AND p.year > p4.year
+AND p.year > p2.year
+AND p.year > p3.year
+MERGE (p2)-[:CITEBY]->(p)
+MERGE (p3)-[:CITEBY]->(p)
+MERGE (p4)-[:CITEBY]->(p)
+MERGE (p2)<-[:CITETO]-(p)
+MERGE (p3)<-[:CITETO]-(p)
+MERGE (p4)<-[:CITETO]-(p)
+
+-- Main Author
+MATCH (a:Author)-[w:WRITES]->(p:Paper)
+WITH p, COLLECT([a,w]) as main
+SET ((main[0])[1]).mainAuthor = true
+
+-- Query 1: setting property of hindex
+MATCH (a:Author)-[:WRITES]->(p:Paper)
+WITH a,p
+OPTIONAL MATCH (p)-[c:CITEBY]->()
+WITH a,p, COUNT(c) as cite
+ORDER BY a,cite DESC
+WITH a, COLLECT(cite) as cites
+FOREACH ( i IN RANGE (1,SIZE(cites)) | 
+        SET (a).hindex =
+            CASE WHEN i <= (cites)[i-1] THEN
+                i 
+                WHEN not exists ((a).hindex) THEN
+                0
+            	 WHEN i >  (cites)[i-1] THEN 
+                (a).hindex
+            ELSE 0
+        END)
+
+-- Query 2: top papers cited
+MATCH (c:Conference)-[]->(p:Paper)-[ci:CITEBY]->()
+WITH c.name as conference, p.title as title, COUNT(ci) AS times
+ORDER BY conference,times DESC
+RETURN conference, COLLECT(title)[0..3] as papers
+
+-- Query 3
+MATCH (c:Conference)-[p:PUBLISHED]-()-[:WRITES]-(a:Author)
+WITH c.name as Conference,a.name as Author, count(p) as cnt
+WHERE cnt>4
+RETURN Conference, collect(Author) AS Community
+
+-- Query 4
+MATCH (j:Journal)-[pu:PUBLISHED]->(p:Paper)
+WHERE pu.year = toString(date().year-2) OR pu.year = toString(date().year-1)
+WITH j.name as journal, p
+MATCH (p)-[c:CITEBY]->()
+WITH journal, p, COUNT(c) as cites
+RETURN journal, (SUM(cites)*1.0/COUNT(p)) AS Impact_factor
+
+-- ALGORITHMS
+-- PageRank (EXPLAIN THAT WE REMOVED THE YEARS TO MAKE IT WORK NOT TO LOSE OUR DATA INSERT SCREEHSHOTS)
+CALL algo.pageRank.stream("Paper", "CITETO",
+{iterations:20})
+YIELD nodeId, score
+MATCH (node) WHERE id(node) = nodeId
+RETURN node.title AS page,score
+ORDER BY score DESC
+
+-- Louvain
+CALL algo.louvain.stream('Paper', 'CITETO', {})
+YIELD nodeId, community
+
+RETURN algo.getNodeById(nodeId).title AS paper, community
+ORDER BY community;
+
+-- RECOMMENDER
+- The first thing to do is to find/define the research communities. A community is
+defined by a set of keywords. Assume that the database community is defined through
+the following keywords: data management, indexing, data modeling, big data, data
+processing, data storage and data querying.
+
+MATCH (k:Keyword)-->(p:Paper)
+WHERE k.word in ["data management", "indexing", "data modeling", "big data", "data processing", "data storage", "data querying"]
+RETURN p.title
+
+- Next, we need to find the conferences and journals related to the database community
+(i.e., are specific to the field of databases). Assume that if 90% of the papers published
+in a conference/journal contain one of the keywords of the database community we
+consider that conference/journal as related to that community.
+
+MATCH (k:Keyword)-->(p:Paper)
+WHERE k.word in ["data management", "indexing", "data modeling", "big data", "data processing", "data storage", "data querying"]
+WITH COLLECT(p) as dbcommunity
+MATCH (c)-[pu:PUBLISHED]->()
+WITH c, COUNT(pu) as numberTotal, dbcommunity
+MATCH (c)-[]-(p:Paper)
+WHERE p in dbcommunity
+WITH c.name as conferenceJournal, numberTotal, COUNT(p) as number
+WHERE (number*1.0)/numberTotal >= 0.9
+RETURN conferenceJournal
+
+- Next, we want to identify the top papers of these conferences/journals. We need to
+find the papers with the highest page rank provided the number of citations from the
+papers of the same community (papers in the conferences/journals of the database
+community). As a result we would obtain (highlight), say, the top-100 papers of the
+conferences of the database community.
+
+MATCH (k:Keyword)-->(p:Paper)
+WHERE k.word in ["data management", "indexing", "data modeling", "big data", "data processing", "data storage", "data querying"]
+WITH COLLECT(p) as dbcommunity
+MATCH (c)-[pu:PUBLISHED]->()
+WITH c, COUNT(pu) as numberTotal, dbcommunity
+MATCH (c)-[]-(p:Paper)
+WHERE p in dbcommunity
+WITH c, numberTotal, COUNT(p) as number
+WHERE (number*1.0)/numberTotal >= 0.9
+MATCH (c)--(p:Paper)
+WITH COLLECT(p) as papersCommunity
+
+CALL algo.pageRank.stream('Paper', 'CITETO', {iterations:20, dampingFactor:0.85, sourceNodes: papersCommunity})
+YIELD nodeId, score
+RETURN algo.getNodeById(nodeId).title AS paper,score
+ORDER BY score DESC LIMIT 100
+
+- Finally, an author of any of these top-100 papers is automatically considered a potential
+good match to review database papers. In addition, we want to identify gurus, i.e.,
+very reputated authors that would be able to review for top conferences. We identify
+gurus as those authors that are authors of, at least, two papers among the top-100
+identified.
+
+MATCH (k:Keyword)-->(p:Paper)
+WHERE k.word in ["data management", "indexing", "data modeling", "big data", "data processing", "data storage", "data querying"]
+WITH COLLECT(p) as dbcommunity
+MATCH (c)-[pu:PUBLISHED]->()
+WITH c, COUNT(pu) as numberTotal, dbcommunity
+MATCH (c)-[]-(p:Paper)
+WHERE p in dbcommunity
+WITH c, numberTotal, COUNT(p) as number
+WHERE (number*1.0)/numberTotal >= 0.9
+MATCH (c)--(p:Paper)
+WITH COLLECT(p) as papersCommunity
+
+
+CALL algo.pageRank.stream('Paper', 'CITETO', {iterations:20, dampingFactor:0.85, sourceNodes: papersCommunity})
+YIELD nodeId, score
+WITH algo.getNodeById(nodeId) AS paper,score
+ORDER BY score DESC LIMIT 100
+
+MATCH (paper)<-[:WRITES]-(a:Author)
+WITH a, collect (paper) as papers
+WHERE SIZE(papers) > 2
+RETURN a.name,  SIZE(papers)  as numberOfPapers
